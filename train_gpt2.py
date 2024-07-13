@@ -90,7 +90,7 @@ class Block(nn.Module):
 
 class GPT(nn.Module):
 
-    def __init__(self, config: GPTConfig):  # Added GPTConfig type annotation, not sure if that's correct
+    def __init__(self, config: GPTConfig):  # Added GPTConfig type annotation
         super().__init__()
         self.config = config
 
@@ -178,17 +178,15 @@ class GPT(nn.Module):
             'mlp.c_fc.weight',
             'mlp.c_proj.weight',
         ]
-        for k in sd_keys_hf:
-            if any(k.endswith(w) for w in transposed):
-                # special treatment for the Conv1D weights we need to transpose
-                assert sd_hf[k].shape[::-1] == sd[k].shape, f"transposing {k}"
-                with torch.no_grad():
-                    sd[k].copy_(sd_hf[k].t())
-            else:
-                # vanilla copy over the other parameters
-                assert sd_hf[k].shape == sd[k].shape, f"copying {k}: {sd_hf[k].shape} != {sd[k].shape}"
-                with torch.no_grad():
-                    sd[k].copy_(sd_hf[k])
+        with torch.no_grad():
+            for k in sd_keys_hf:
+                source = sd_hf[k]
+                if any(k.endswith(w) for w in transposed):
+                    # for the Conv1D weights we need to transpose
+                    source = source.t()
+                # copy over the parameters
+                assert source.shape == sd[k].shape, f"copying {k}: {source.shape} != {sd[k].shape}"
+                sd[k].copy_(source)
 
         return model
 
