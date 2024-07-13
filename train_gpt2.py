@@ -3,6 +3,7 @@ import math
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import time
 
 # ------------------------------------------------------------------------------
 
@@ -268,7 +269,7 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed(42)
 
 # get a data batch
-train_loader = DataLoaderLite('tiny_shakespeare.txt', B=4, T=32)
+train_loader = DataLoaderLite('tiny_shakespeare.txt', B=4, T=256)
 
 # x, y = train_loader.next_batch()
 # print(x.shape, y.shape)
@@ -286,6 +287,7 @@ model.to(device)
 # do some optimization steps
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(5):
+    t0 = time.time()
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
 
@@ -294,7 +296,11 @@ for i in range(5):
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
-    print(f"step #{i+1}), loss: {loss.item()}")
+    if device == 'cuda':
+        torch.cuda.synchronize() 
+    dt = time.time() - t0
+    tokens_per_sec = (train_loader.B * train_loader.T) / dt
+    print(f"step #{i+1}), loss: {loss.item():.6f}, dt: {dt*1000:.2f}ms, tokens/sec: {tokens_per_sec:.2f}")
 
 with torch.no_grad():
     _, loss = model(x, y)
