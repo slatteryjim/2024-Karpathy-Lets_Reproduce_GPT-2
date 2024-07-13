@@ -108,7 +108,7 @@ class GPT(nn.Module):
         # translate the embedding back to a token
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
     
-    def forward(self, idx):
+    def forward(self, idx, targets=None):
         # idx is of shape (B, T) of integers
         B, T = idx.size()
         assert T <= self.config.block_size, f"Cannot forward sequence length {T} > block size {self.config.block_size}"
@@ -123,7 +123,14 @@ class GPT(nn.Module):
         # forward the final layernorm and classifier
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x) # (B, T, vocab_size)
-        return logits
+
+        loss = None
+        if targets != None:
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),  # (B * T, vocab_size)
+                targets.view(-1) # (B * T)
+            )
+        return logits, loss
 
     @classmethod
     def from_pretrained(cls, model_type: str):
@@ -200,6 +207,29 @@ elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
     device = 'mps'
 print(f"Using device: {device}")
 
+# get a data batch
+import tiktoken
+enc = tiktoken.get_encoding("gpt2")
+with open('tiny_shakespeare.txt', 'r') as f:
+    text = f.read()
+text = text[:1000]
+tokens = enc.encode(text)
+B, T = 4, 32
+buf = torch.tensor(tokens[:B*T + 1]) # add one so we have a y for every x
+x = buf[:-1].view(B, T)
+y = buf[1:].view(B, T)
+
+# get logits
+model = GPT(GPTConfig())
+model.to(device)
+logits, loss = model(x, y)
+
+print(loss)
+import sys; sys.exit(0)
+
+
+
+
 # load the model
 model = GPT.from_pretrained("gpt2")
 # model = GPT(GPTConfig()) # randomly initialized model
@@ -213,8 +243,6 @@ max_length = 30
 print(f"Generating {num_return_sequences} completions for prompt: {prompt}")
 
 # prefix tokens
-import tiktoken
-enc = tiktoken.get_encoding("gpt2")
 tokens = enc.encode(prompt)
 tokens = torch.tensor(tokens, dtype=torch.long) # (8,)
 tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # (5, 8)
