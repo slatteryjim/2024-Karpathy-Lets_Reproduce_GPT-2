@@ -243,16 +243,14 @@ print(f"Using device: {device}")
 # get a data batch
 train_loader = DataLoaderLite('tiny_shakespeare.txt', B=4, T=32)
 
-x, y = train_loader.next_batch()
-print(x.shape, y.shape)
-# display x and y as decoded text
-enc = tiktoken.get_encoding("gpt2")
-for i in range(x.size(0)):
-    print(f"\nBatch {i+1}:")
-    print("X:", [enc.decode([t]) for t in x[i].tolist()])
-    print("Y:", [enc.decode([t]) for t in y[i].tolist()])
-
-sys.exit(0)
+# x, y = train_loader.next_batch()
+# print(x.shape, y.shape)
+# # display x and y as decoded text
+# enc = tiktoken.get_encoding("gpt2")
+# for i in range(x.size(0)):
+#     print(f"\nBatch {i+1}:")
+#     print("X:", [enc.decode([t]) for t in x[i].tolist()])
+#     print("Y:", [enc.decode([t]) for t in y[i].tolist()])
 
 # construct model
 model = GPT(GPTConfig())
