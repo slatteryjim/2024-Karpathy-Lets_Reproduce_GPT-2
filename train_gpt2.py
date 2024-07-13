@@ -216,6 +216,7 @@ text = text[:1000]
 tokens = enc.encode(text)
 B, T = 4, 32
 buf = torch.tensor(tokens[:B*T + 1]) # add one so we have a y for every x
+buf = buf.to(device)
 x = buf[:-1].view(B, T)
 y = buf[1:].view(B, T)
 
@@ -224,7 +225,21 @@ model = GPT(GPTConfig())
 model.to(device)
 logits, loss = model(x, y)
 
-print(loss)
+# do some optimization steps
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+for i in range(5):
+    logits, loss = model(x, y)
+    # remember to zero the gradients before running the backward pass
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    print(f"step #{i+1}), loss: {loss.item()}")
+
+with torch.no_grad():
+    _, loss = model(x, y)
+    print(f"Final loss: {loss.item()}")
+
+
 import sys; sys.exit(0)
 
 
