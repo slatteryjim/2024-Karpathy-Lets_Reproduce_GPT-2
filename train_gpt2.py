@@ -83,15 +83,15 @@ class Block(nn.Module):
     
     def forward(self, x):
         # notice the "x +" residual connections
-        x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp( self.ln_2(x))
+        # x = x + self.attn(self.ln_1(x))
+        # x = x + self.mlp( self.ln_2(x))
 
-        # TODO: simulate a nasty bug
+        # TODO: simulate a nasty bug, messing up how the residual connections flow.
         #       How much would it have messed up the model outputs if we had done this instead?:
-        # x =     self.ln_1(x)
-        # x = x + self.attn(x)
-        # x =     self.ln_2(x)
-        # x = x + self.mlp(x)
+        x =     self.ln_1(x)
+        x = x + self.attn(x)
+        x =     self.ln_2(x)
+        x = x + self.mlp(x)
 
         return x
 
@@ -161,14 +161,14 @@ class GPT(nn.Module):
         sd_keys = sd.keys()
         sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')] # discard this mask/buffer
         
-        # print out some info about the state dict
-        print(f"State dict has {len(sd)} entries, {len(sd_keys)} after filtering.")
-        for k in sd_keys:
-            v = sd[k]
-            print(f"  {k}\t{v.shape} = {v.view(-1).size().numel():,}")
-        # sum up the sizes
-        total_params = sum([sd[k].view(-1).size().numel() for k in sd_keys])
-        print(f"Total parameters: {total_params:,}")
+        # # print out some info about the state dict
+        # print(f"State dict has {len(sd)} entries, {len(sd_keys)} after filtering.")
+        # for k in sd_keys:
+        #     v = sd[k]
+        #     print(f"  {k}\t{v.shape} = {v.view(-1).size().numel():,}")
+        # # sum up the sizes
+        # total_params = sum([sd[k].view(-1).size().numel() for k in sd_keys])
+        # print(f"Total parameters: {total_params:,}")
 
         # init a huggingface/transformers model
         model_hf = GPT2LMHeadModel.from_pretrained(model_type)
