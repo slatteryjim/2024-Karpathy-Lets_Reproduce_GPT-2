@@ -1,0 +1,212 @@
+from dataclasses import dataclass
+import math
+import torch
+import torch.nn as nn
+from torch.nn import functional as F
+
+# ------------------------------------------------------------------------------
+
+@dataclass
+class GPTConfig:
+    """
+    Describes a GPT model structure
+    """
+    block_size: int = 256  # the size of our context window
+    vocab_size: int = 65
+    n_layer:    int = 6
+    n_head:     int = 6
+    n_embd:     int = 384  # the size of the embedding vector
+
+class CausalSelfAttention(nn.Module):
+    """
+    Attention mechanism used in the transformer block
+    """
+    def __init__(self,
+                 n_embd: int,
+                 n_head: int,
+                 block_size: int):
+        super().__init__()
+        assert n_embd % n_head == 0
+        # key, query, value projections for all heads, but in a batch
+        self.c_attn = nn.Linear(n_embd, 3*n_embd)
+        # output projection
+        self.c_proj = nn.Linear(n_embd, n_embd)
+        # regularization
+        self.n_head = n_head
+        self.n_embd = n_embd
+        # not really a "bias", more of a mask, but following the OpenAI/HF naming though
+        self.register_buffer("bias", torch.tril(torch.ones(block_size, block_size))
+                                     .view(1, 1, block_size, block_size))
+        
+    def forward(self, x):
+        B, T, C = x.size() # batch size, sequence legth, embedding dimensionality (n_embd)
+        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        # nh is "number of heads", hs is "head size", and C (number of channels) = nh * hs
+        # e.g. in GPT-2 (124M): nh=12, hs=64, so nh*hs = C=768 channels in the Transformer
+        qkv = self.c_attn(x)
+        q, k, v = qkv.split(self.n_embd, dim=2)
+        nh = self.n_head
+        hs = C // self.n_head
+        k = k.view(B, T, nh, hs).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(B, T, nh, hs).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, nh, hs).transpose(1, 2) # (B, nh, T, hs)
+        # attention (materializes the large (T,T) matrix for all the queries and keys)
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # k.size(-1) should be hs
+        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+        att = F.softmax(att, dim=-1)
+        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+        # output projection
+        y = self.c_proj(y)
+        return y
+
+class MLP(nn.Module):
+    """
+    Multi-layer perceptron, or feed-forward network
+    """
+    def __init__(self, n_embd: int, mult=4):
+        super().__init__()
+        self.c_fc   = nn.Linear(n_embd, n_embd*mult)
+        self.gelu   = nn.GELU(approximate='tanh')  # GPT-2 used approximate, otherwise the exact version is preferred now and performs well
+        self.c_proj = nn.Linear(n_embd*mult, n_embd)
+    
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = self.gelu(x)
+        x = self.c_proj(x)
+        return x
+
+class Block(nn.Module):
+    """
+    The transformer block.
+    """
+
+    # TODO: pass which specific configs we need, rather than whole config object
+    def __init__(self, config: GPTConfig):
+        super().__init__()
+        self.ln_1 = nn.LayerNorm(config.n_embd)
+        self.attn = CausalSelfAttention(config.n_embd, config.n_head, config.block_size)
+        self.ln_2 = nn.LayerNorm(config.n_embd)
+        self.mlp = MLP(config.n_embd)
+    
+    def forward(self, x):
+        # notice the "x +" residual connections
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.mlp( self.ln_2(x))
+
+        # TODO: simulate a nasty bug
+        #       How much would it have messed up the model outputs if we had done this instead?:
+        # x =     self.ln_1(x)
+        # x = x + self.attn(x)
+        # x =     self.ln_2(x)
+        # x = x + self.mlp(x)
+
+        return x
+
+
+class GPT(nn.Module):
+
+    def __init__(self, config: GPTConfig):  # Added GPTConfig type annotation, not sure if that's correct
+        super().__init__()
+        self.config = config
+
+        # Build the structure of the model
+        # We'll initialize the weights later
+        self.transformer = nn.ModuleDict(dict(
+            wte = nn.Embedding(config.vocab_size, config.n_embd),
+            wpe = nn.Embedding(config.block_size, config.n_embd),
+            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            ln_f = nn.LayerNorm(config.n_embd),
+        ))
+        # translate the embedding back to a token
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+    
+    def forward(self, idx):
+        # idx is of shape (B, T) of integers
+        B, T = idx.size()
+        assert T <= self.config.block_size, f"Cannot forward sequence length {T} > block size {self.config.block_size}"
+        # forward the token and position embeddings
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
+        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (T, n_embd)
+        tok_emb = self.transformer.wte(idx) # token embeddings of shape (B, T, n_embd)
+        x = tok_emb + pos_emb
+        # forward the blocks of the transformer
+        for block in self.transformer.h:
+            x = block(x)
+        # forward the final layernorm and classifier
+        x = self.transformer.ln_f(x)
+        logits = self.lm_head(x) # (B, T, vocab_size)
+        return logits
+
+    @classmethod
+    def from_pretrained(cls, model_type: str):
+        """Load a pre-trained model from the Hugging Face model hub"""
+        assert model_type in [
+            "gpt2",
+            "gpt2-medium",
+            "gpt2-large",
+            "gpt2-xl"
+        ]
+        from transformers import GPT2LMHeadModel
+        print(f"Loading {model_type} pretrained model weights...")
+        # n_layer, n_head, and n_embd are determined from model type
+        config_args = {
+            'gpt2':        dict(n_layer=12, n_head=12, n_embd=768),   #  124M params
+            'gpt2-medium': dict(n_layer=24, n_head=16, n_embd=1024),  #  350M params
+            'gpt2-large':  dict(n_layer=36, n_head=20, n_embd=1280),  #  774M params
+            'gpt2-xl':     dict(n_layer=48, n_head=25, n_embd=1600),  # 1558M params
+        }[model_type]
+        # set options that are the same for all GPT2 model checkpoints
+        config_args['vocab_size'] = 50257 
+        config_args['block_size'] = 1024
+        # create a from-scratch initialized minGPT model
+        config = GPTConfig(**config_args)
+        model = GPT(config)
+        sd = model.state_dict()
+        sd_keys = sd.keys()
+        sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')] # discard this mask/buffer
+        
+        # print out some info about the state dict
+        print(f"State dict has {len(sd)} entries, {len(sd_keys)} after filtering.")
+        for k in sd_keys:
+            v = sd[k]
+            print(f"  {k}\t{v.shape} = {v.view(-1).size().numel():,}")
+        # sum up the sizes
+        total_params = sum([sd[k].view(-1).size().numel() for k in sd_keys])
+        print(f"Total parameters: {total_params:,}")
+
+        # init a huggingface/transformers model
+        model_hf = GPT2LMHeadModel.from_pretrained(model_type)
+        # copy while ensuring all of the parameters are aligned and match in names and shapes
+        sd_hf = model_hf.state_dict()
+        sd_keys_hf = sd_hf.keys()
+        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.masked_bias')] # ignore these buffers
+        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.bias')] # same, just the mask
+        assert len(sd_keys_hf) == len(sd_keys), f"mismatched keys: {len(sd_keys_hf)} != {len(sd_keys)}"
+        # The openai checkpoints use a 'Conv1D" module, but we only want to use a vanilla Linear layer.
+        # This means that we have to transpose these weights when we import them
+        transposed = [
+            'attn.c_attn.weight',
+            'attn.c_proj.weight',
+            'mlp.c_fc.weight',
+            'mlp.c_proj.weight',
+        ]
+        for k in sd_keys_hf:
+            if any(k.endswith(w) for w in transposed):
+                # special treatment for the Conv1D weights we need to transpose
+                assert sd_hf[k].shape[::-1] == sd[k].shape, f"transposing {k}"
+                with torch.no_grad():
+                    sd[k].copy_(sd_hf[k].t())
+            else:
+                # vanilla copy over the other parameters
+                assert sd_hf[k].shape == sd[k].shape, f"copying {k}: {sd_hf[k].shape} != {sd[k].shape}"
+                with torch.no_grad():
+                    sd[k].copy_(sd_hf[k])
+
+        return model
+
+
+GPT.from_pretrained("gpt2")
+print("yay, we didn't crash!")
+
+
