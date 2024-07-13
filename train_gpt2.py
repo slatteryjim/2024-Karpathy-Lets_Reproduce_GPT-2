@@ -8,19 +8,15 @@ from torch.nn import functional as F
 
 @dataclass
 class GPTConfig:
-    """
-    Describes a GPT model structure
-    """
-    block_size: int = 256  # the size of our context window
-    vocab_size: int = 65
-    n_layer:    int = 6
-    n_head:     int = 6
-    n_embd:     int = 384  # the size of the embedding vector
+    """Describes a GPT model structure"""
+    block_size: int = 1024  # the size of our context window (max sequences length)
+    vocab_size: int = 50257 # number of tokens: 50,000 BPE merges + 256 bytes + 1 special end of document token
+    n_layer:    int = 12    # number of layers
+    n_head:     int = 12    # number of heads
+    n_embd:     int = 768   # the size of the embedding vector
 
 class CausalSelfAttention(nn.Module):
-    """
-    Attention mechanism used in the transformer block
-    """
+    """Attention mechanism used in the transformer block"""
     def __init__(self,
                  n_embd: int,
                  n_head: int,
@@ -61,9 +57,7 @@ class CausalSelfAttention(nn.Module):
         return y
 
 class MLP(nn.Module):
-    """
-    Multi-layer perceptron, or feed-forward network
-    """
+    """Multi-layer perceptron, or feed-forward network"""
     def __init__(self, n_embd: int, mult=4):
         super().__init__()
         self.c_fc   = nn.Linear(n_embd, n_embd*mult)
@@ -77,9 +71,7 @@ class MLP(nn.Module):
         return x
 
 class Block(nn.Module):
-    """
-    The transformer block.
-    """
+    """The transformer block."""
 
     # TODO: pass which specific configs we need, rather than whole config object
     def __init__(self, config: GPTConfig):
