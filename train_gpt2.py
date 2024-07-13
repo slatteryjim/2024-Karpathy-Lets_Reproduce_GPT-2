@@ -191,10 +191,14 @@ class GPT(nn.Module):
         return model
 
 # ------------------------------------------------------------------------------
-num_return_sequences = 5
-max_length = 30
 
+# attempt to autodetect the device
 device = 'cpu'
+if torch.cuda.is_available():
+    device = 'cuda'
+elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    device = 'mps'
+print(f"Using device: {device}")
 
 # load the model
 model = GPT.from_pretrained("gpt2")
@@ -202,10 +206,16 @@ model = GPT.from_pretrained("gpt2")
 model.eval() # put in eval mode for generating; not sure if it actually matters for this gpt2 model
 model.to(device)
 
+# generate some text
+prompt = "Hello, I'm a language model,"
+num_return_sequences = 5
+max_length = 30
+print(f"Generating {num_return_sequences} completions for prompt: {prompt}")
+
 # prefix tokens
 import tiktoken
 enc = tiktoken.get_encoding("gpt2")
-tokens = enc.encode("Hello, I'm a language model,")
+tokens = enc.encode(prompt)
 tokens = torch.tensor(tokens, dtype=torch.long) # (8,)
 tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # (5, 8)
 x = tokens.to(device)
