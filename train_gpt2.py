@@ -271,6 +271,11 @@ if torch.cuda.is_available():
 # get a data batch
 train_loader = DataLoaderLite('tiny_shakespeare.txt', B=4, T=256)
 
+if device == 'cuda':
+    # A100's can use tensor float 32 for matmuls, which drops bits of precision from the mantissa.
+    # It's theoretically 8x faster, but we might observe only 3x faster.
+    torch.set_float32_matmul_precision('high')
+
 # x, y = train_loader.next_batch()
 # print(x.shape, y.shape)
 # # display x and y as decoded text
@@ -283,17 +288,30 @@ train_loader = DataLoaderLite('tiny_shakespeare.txt', B=4, T=256)
 # construct model
 model = GPT(GPTConfig())
 model.to(device)
+# don't compile the model on CPU, catastrophic performance degradation!
+if device == 'cuda':
+    print("Compiling model")
+    model = torch.compile(model)
 
-# do some optimization steps
+steps = 5
+print(f"Performing {steps} optimization steps")
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(5):
     t0 = time.time()
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
 
-    logits, loss = model(x, y)
     # remember to zero the gradients before running the backward pass
     optimizer.zero_grad()
+
+    if device == 'cuda':
+        # enable autocast to bfloat16 only during the forward pass (model + loss)
+        # this hopefully gives some more improved performance (at the cost of some precision).
+        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+            logits, loss = model(x, y)
+    else:
+        logits, loss = model(x, y)
+
     loss.backward()
     optimizer.step()
     if device == 'cuda':
