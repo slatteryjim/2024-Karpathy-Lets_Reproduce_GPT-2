@@ -108,14 +108,10 @@ class GPT(nn.Module):
         # translate the embedding back to a token
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # weight sharing scheme
-        # The embedding matrix and decoding matrix can share the same weights!
-        # Fortunately the linear layer stores the weights in transposed format, so we can reuse
-        # the embedding matrix weights for the decoding matrix!
-        # This reduces the parameter count by like 30% for GPT2.
-        # And it should lead to faster convergence as well.
+        # We reuse the Linear layer's weights, as the Embedding layer's weights are initialized
+        # in a less optimal way for this use case.
+        # (If we set them up in the reverse way, we get a loss of 400+ instead of 10.8.)
         self.transformer.wte.weight = self.lm_head.weight
-        # Hmm, strange why doesn't it work if you set the opposite? We get loss of 400+ instead of 10.8
-        #self.lm_head.weight = self.transformer.wte.weight
     
     def forward(self, idx, targets=None):
         # idx is of shape (B, T) of integers
