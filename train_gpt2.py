@@ -27,6 +27,7 @@ class CausalSelfAttention(nn.Module):
         self.c_attn = nn.Linear(n_embd, 3*n_embd)
         # output projection
         self.c_proj = nn.Linear(n_embd, n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1 # special init scaling for the output of this module
         # regularization
         self.n_head = n_head
         self.n_embd = n_embd
@@ -63,6 +64,7 @@ class MLP(nn.Module):
         self.c_fc   = nn.Linear(n_embd, n_embd*mult)
         self.gelu   = nn.GELU(approximate='tanh')  # GPT-2 used approximate, otherwise the exact version is preferred now and performs well
         self.c_proj = nn.Linear(n_embd*mult, n_embd)
+        self.c_proj.NANOGPT_SCALE_INIT = 1 # special init scaling for the output of this module
     
     def forward(self, x):
         x = self.c_fc(x)
@@ -112,6 +114,22 @@ class GPT(nn.Module):
         # in a less optimal way for this use case.
         # (If we set them up in the reverse way, we get a loss of 400+ instead of 10.8.)
         self.transformer.wte.weight = self.lm_head.weight
+
+        # init params with special logic
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        """Initialize the weights using special logic from GPT2 paper"""
+        if isinstance(module, (nn.Linear)):
+            std = 0.02
+            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+                # the layers stack on one another, we want to keep the std from growing out of hand
+                std *= (2 * self.config.n_layer) ** -0.5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
     
     def forward(self, idx, targets=None):
         # idx is of shape (B, T) of integers
