@@ -74,12 +74,12 @@ class Block(nn.Module):
     """The transformer block."""
 
     # TODO: pass which specific configs we need, rather than whole config object
-    def __init__(self, config: GPTConfig):
+    def __init__(self, n_embd: int, n_head: int, block_size: int):
         super().__init__()
-        self.ln_1 = nn.LayerNorm(config.n_embd)
-        self.attn = CausalSelfAttention(config.n_embd, config.n_head, config.block_size)
-        self.ln_2 = nn.LayerNorm(config.n_embd)
-        self.mlp = MLP(config.n_embd)
+        self.ln_1 = nn.LayerNorm(n_embd)
+        self.attn = CausalSelfAttention(n_embd, n_head, block_size)
+        self.ln_2 = nn.LayerNorm(n_embd)
+        self.mlp = MLP(n_embd)
     
     def forward(self, x):
         # notice the "x +" residual connections
@@ -107,7 +107,10 @@ class GPT(nn.Module):
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            h = nn.ModuleList([
+                Block(config.n_embd, config.n_head, config.block_size)
+                for _ in range(config.n_layer)
+            ]),
             ln_f = nn.LayerNorm(config.n_embd),
         ))
         # translate the embedding back to a token
@@ -205,6 +208,7 @@ device = 'cpu'
 
 # load the model
 model = GPT.from_pretrained("gpt2")
+# model = GPT(GPTConfig()) # randomly initialized model
 model.eval() # put in eval mode for generating; not sure if it actually matters for this gpt2 model
 model.to(device)
 
