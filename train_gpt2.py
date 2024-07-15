@@ -305,10 +305,27 @@ if device == 'cuda':
     print("Compiling model")
     model = torch.compile(model)
 
-steps = 5
-print(f"Performing {steps} optimization steps")
+max_lr = 6e-4
+min_lr = 0.10 *max_lr
+warmup_steps = 2
+max_steps = 5
+def get_lr(step):
+    """Compute learning rate according to the GPT-3 schedule"""
+    # 1) linear warmup for warmup_iters steps
+    if step < warmup_steps:
+        return max_lr * (step+1) / warmup_steps
+    # 2) if step > lr_decay_iters, return min learning rate
+    if step > max_steps:
+        return min_lr
+    # 3) in between, use cosine decay down to min learning rate
+    decay_ratio = (step - warmup_steps) / (max_steps - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
+    return min_lr + coeff * (max_lr - min_lr)
+
+print(f"Performing {max_steps} optimization steps")
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)  # betas, eps specified in GPT-3 paper
-for i in range(5):
+for step in range(max_steps):
     t0 = time.time()
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
@@ -329,12 +346,16 @@ for i in range(5):
     # prevents the model from experiencing too big of shocks from any individual batch.
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
+    lr = get_lr(step)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+        
     optimizer.step()
     if device == 'cuda':
         torch.cuda.synchronize() 
     dt = time.time() - t0
     tokens_per_sec = (train_loader.B * train_loader.T) / dt
-    print(f"step #{i+1}) | loss: {loss.item():.6f} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tokens/sec: {tokens_per_sec:.2f}")
+    print(f"step #{step+1} | loss: {loss.item():.6f} | norm: {norm:.4f} | lr: {lr:.4e} | dt: {dt*1000:.2f}ms | tokens/sec: {tokens_per_sec:.2f}")
 
 with torch.no_grad():
     _, loss = model(x, y)
