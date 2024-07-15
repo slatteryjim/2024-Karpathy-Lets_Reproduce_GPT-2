@@ -48,11 +48,23 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, nh, hs).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, nh, hs).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, nh, hs).transpose(1, 2) # (B, nh, T, hs)
-        # attention (materializes the large (T,T) matrix for all the queries and keys)
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # k.size(-1) should be hs
-        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
-        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        
+        # attention (materializes the large (T,T) matrix for all the queries and keys)    
+        if torch.cuda.is_available():
+            # Use flash attention.
+            # This is a fused kernel that takes advantage of the 2018 Nvidia algorithm for
+            # calculating the softmax in a streaming fashion.
+            # So the whole attention mechanism is done without having to materialize the attention
+            # matrix in the HBM.
+            # This algorithm uses much higher FLOPs, but completely avoids costly memory accesses.
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        else:
+            # the slower, more explicit way
+            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # k.size(-1) should be hs
+            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            att = F.softmax(att, dim=-1)
+            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
         # output projection
         y = self.c_proj(y)
