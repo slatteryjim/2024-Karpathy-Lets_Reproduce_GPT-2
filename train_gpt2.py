@@ -187,7 +187,7 @@ class GPT(nn.Module):
             'gpt2-xl':     dict(n_layer=48, n_head=25, n_embd=1600),  # 1558M params
         }[model_type]
         # set options that are the same for all GPT2 model checkpoints
-        config_args['vocab_size'] = 50257 
+        config_args['vocab_size'] = 50304 # increased from 50257 to be a nice multiple of 128
         config_args['block_size'] = 1024
         # create a from-scratch initialized minGPT model
         config = GPTConfig(**config_args)
