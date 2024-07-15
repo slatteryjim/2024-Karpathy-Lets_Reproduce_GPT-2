@@ -307,7 +307,7 @@ if device == 'cuda':
 
 steps = 5
 print(f"Performing {steps} optimization steps")
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)  # betas, eps specified in GPT-3 paper
 for i in range(5):
     t0 = time.time()
     x, y = train_loader.next_batch()
@@ -325,12 +325,16 @@ for i in range(5):
         logits, loss = model(x, y)
 
     loss.backward()
+    # suggested by GPT-3 paper: gradient norm clipping
+    # prevents the model from experiencing too big of shocks from any individual batch.
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
     optimizer.step()
     if device == 'cuda':
         torch.cuda.synchronize() 
     dt = time.time() - t0
     tokens_per_sec = (train_loader.B * train_loader.T) / dt
-    print(f"step #{i+1}), loss: {loss.item():.6f}, dt: {dt*1000:.2f}ms, tokens/sec: {tokens_per_sec:.2f}")
+    print(f"step #{i+1}) | loss: {loss.item():.6f} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tokens/sec: {tokens_per_sec:.2f}")
 
 with torch.no_grad():
     _, loss = model(x, y)
