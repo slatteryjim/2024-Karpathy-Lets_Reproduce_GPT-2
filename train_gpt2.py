@@ -304,8 +304,14 @@ torch.manual_seed(42)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(42)
 
-# get a data batch
-train_loader = DataLoaderLite('tiny_shakespeare.txt', B=4, T=256)
+# batch size, sequence length, and gradient accumulation
+total_batch_size = 4 * 256 # 524288 # 2**19, ~0.5M, in number of tokens
+B = 4    # micro batch size
+T = 256 # sequence length
+assert total_batch_size % (B * T) == 0, "Batch size must be divisible by (micro batch size * sequence length)"
+grad_acc_steps = total_batch_size // (B * T)
+print(f"Total batch size: {total_batch_size:,} | Micro batch size: {B} | Sequence length: {T} | Accumulation steps: {grad_acc_steps}")
+train_loader = DataLoaderLite('tiny_shakespeare.txt', B=B, T=T)
 
 if device == 'cuda':
     # A100's can use tensor float 32 for matmuls, which drops bits of precision from the mantissa.
@@ -353,21 +359,23 @@ optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=max_lr, b
 print(f"Performing {max_steps} optimization steps")
 for step in range(max_steps):
     t0 = time.time()
-    x, y = train_loader.next_batch()
-    x, y = x.to(device), y.to(device)
-
-    # remember to zero the gradients before running the backward pass
+    # zero out the gradients
     optimizer.zero_grad()
-
-    if device == 'cuda':
-        # enable autocast to bfloat16 only during the forward pass (model + loss)
-        # this hopefully gives some more improved performance (at the cost of some precision).
-        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+    batch_loss = 0.0
+    for micro_step in range(grad_acc_steps):
+        x, y = train_loader.next_batch()
+        x, y = x.to(device), y.to(device)
+        if device == 'cuda':
+            # enable autocast to bfloat16 only during the forward pass (model + loss)
+            # this hopefully gives some more improved performance (at the cost of some precision).
+            with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                logits, loss = model(x, y)
+        else:
             logits, loss = model(x, y)
-    else:
-        logits, loss = model(x, y)
+        loss /= grad_acc_steps # scale down the loss because this is just a microbatch
+        batch_loss += loss.detach()
+        loss.backward()
 
-    loss.backward()
     # suggested by GPT-3 paper: gradient norm clipping
     # prevents the model from experiencing too big of shocks from any individual batch.
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -380,8 +388,8 @@ for step in range(max_steps):
     if device == 'cuda':
         torch.cuda.synchronize() 
     dt = time.time() - t0
-    tokens_per_sec = (train_loader.B * train_loader.T) / dt
-    print(f"step #{step+1} | loss: {loss.item():.6f} | norm: {norm:.4f} | lr: {lr:.4e} | dt: {dt*1000:.2f}ms | tokens/sec: {tokens_per_sec:.2f}")
+    tokens_per_sec = (train_loader.B * train_loader.T * grad_acc_steps) / dt
+    print(f"step #{step+1} | loss: {batch_loss.item():.6f} | norm: {norm:.4f} | lr: {lr:.4e} | dt: {dt*1000:.2f}ms | tokens/sec: {tokens_per_sec:.2f}")
 
 with torch.no_grad():
     _, loss = model(x, y)
