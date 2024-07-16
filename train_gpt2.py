@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import math
+import inspect
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -11,7 +12,9 @@ import time
 class GPTConfig:
     """Describes a GPT model structure"""
     block_size: int = 1024  # the size of our context window (max sequences length)
-    vocab_size: int = 50257 # number of tokens: 50,000 BPE merges + 256 bytes + 1 special end of document token
+    # number of tokens: 50,000 BPE merges + 256 bytes + 1 special end of document token
+     # That's 50257, but we round up to a multiple of 128 for better tensor core performance.
+    vocab_size: int = 50304 
     n_layer:    int = 12    # number of layers
     n_head:     int = 12    # number of heads
     n_embd:     int = 768   # the size of the embedding vector
@@ -167,6 +170,27 @@ class GPT(nn.Module):
                 targets.view(-1) # (B * T)
             )
         return logits, loss
+    
+    def configure_optimizers(self, weight_decay, learning_rate, betas, eps, device):       
+        # start with all of the candidate parameters (that require grad)
+        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
+        # split the parameters into two groups:
+        #   - those that require weight decay (weight tensors in matmuls, embeddings)
+        # and those that don't (biases, and layernorms)
+        decay_params   = [p for _, p in param_dict.items() if p.dim() >= 2]
+        nodecay_params = [p for _, p in param_dict.items() if p.dim() < 2]
+        optim_groups = [
+            {"params": decay_params,   "weight_decay": weight_decay},
+            {"params": nodecay_params, "weight_decay": 0.0}
+        ]
+        print(f"num decayed parameter tensors:     {len(decay_params)  :,}, with {sum(p.numel() for p in decay_params)  :,} parameters")
+        print(f"num non-decayed parameter tensors: {len(nodecay_params):,}, with {sum(p.numel() for p in nodecay_params):,} parameters")
+        # create Adam optimizer and use the fused version if it is available
+        fused_available = 'fused' in inspect.signature(torch.optim.Adam).parameters
+        use_fused = fused_available and 'cuda' in device
+        print(f"using fused AdamW: {use_fused}")
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, eps=eps, fused=use_fused)
+        return optimizer
 
     @classmethod
     def from_pretrained(cls, model_type: str):
@@ -323,8 +347,10 @@ def get_lr(step):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
     return min_lr + coeff * (max_lr - min_lr)
 
+# optimize!
+# weight_decay, betas, eps specified in GPT-3 paper
+optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=max_lr, betas=(0.9, 0.95), eps=1e-8, device=device)
 print(f"Performing {max_steps} optimization steps")
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)  # betas, eps specified in GPT-3 paper
 for step in range(max_steps):
     t0 = time.time()
     x, y = train_loader.next_batch()
